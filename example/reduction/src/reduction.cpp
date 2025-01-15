@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <random>
 
+#include <chrono>
+#include <iostream>
+
 /** @file
  *
  * In the previous example we showed how to handle thread indices by hand to iterate over 1 and 3-dimensional data.
@@ -147,19 +150,34 @@ void testReductionKernel(
     alpaka::onHost::memset(queue, out_d, 0x00);
 
     std::cout << "Testing VectorAddKernel with vector indices with a grid of " << frameSpec << "\n";
+    
+    auto beginT = std::chrono::high_resolution_clock::now();
+
     queue
         .enqueue(computeExec, frameSpec, ReductionKernel{}, in1_d.getMdSpan(), out_d.getMdSpan(), Vec1D(size));
 
+    auto endT = std::chrono::high_resolution_clock::now();
+    std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's'
+                  << std::endl;
+
+    beginT = std::chrono::high_resolution_clock::now();
     // copy the results from the device to the host
     alpaka::onHost::memcpy(queue, out_h, out_d);
 
     // wait for all the operations to complete
     alpaka::onHost::wait(queue);
+    endT = std::chrono::high_resolution_clock::now();
+    std::cout << "Time for HtoD copy: " << std::chrono::duration<double>(endT - beginT).count() << 's'
+                  << std::endl;
     
+    beginT = std::chrono::high_resolution_clock::now();
     auto finalSum = std::accumulate(
         &out_h[0],
         &out_h[size-1],
         float(0));
+    endT = std::chrono::high_resolution_clock::now();
+    std::cout << "Time for partial sum accumulation: " << std::chrono::duration<double>(endT - beginT).count() << 's'
+                  << std::endl;
 
     float sum = 0;
     // check the results
