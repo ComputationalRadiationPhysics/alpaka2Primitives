@@ -13,6 +13,9 @@
 #include <chrono>
 #include <iostream>
 
+#include <cstdlib>
+#include <ctime>
+
 /** @file
  *
  * In the previous example we showed how to handle thread indices by hand to iterate over 1 and 3-dimensional data.
@@ -39,7 +42,7 @@ struct ReductionKernel
         auto traverseInFrame = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtent});
         auto traverseOverFrames = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::blocksInGrid, alpaka::IdxRange{alpaka::CVec<uint32_t, 0u>{}, frameDataExtent, linearFrameExtent});
         // Shared Mempry
-        auto sumOnSharedMem = alpaka::onAcc::declareSharedMdArray<float>(acc, frameExtent);
+        auto sumOnSharedMem = alpaka::onAcc::declareSharedMdArray<double>(acc, frameExtent);
 
         // Values of these addresses will be used later. 
         // Sync() is not required.
@@ -81,6 +84,7 @@ struct ReductionKernel
             alpaka::onAcc::syncBlockThreads(acc);
             if(local_i < stride){
                 sumOnSharedMem[local_i] += sumOnSharedMem[local_i+stride];
+                //printf("[kernel] %f\n", sumOnSharedMem[local_i]);
                 //sumOnSharedMem[local_i+stride] = 0;
             }
         }
@@ -100,22 +104,27 @@ struct ReductionKernel
 void testReductionKernel(
     alpaka::onHost::concepts::Device auto host,
     alpaka::onHost::concepts::Device auto device,
-    auto computeExec)
+    auto computeExec, auto size)
 {
+
+    std::cout << "[Host] " << alpaka::onHost::getName(host) << ", ";
+    std::cout << "[Device] " << alpaka::onHost::getName(device) << ", ";
+
     // random number generator with a gaussian distribution
-    std::random_device rd{};
-    std::default_random_engine rand{rd()};
-    std::normal_distribution<float> dist{0.f, 1.f};
+    //std::random_device rd{};
+    //std::default_random_engine rand{rd()};
+    std::default_random_engine rand{};
+    std::normal_distribution<double> dist{(double)0.01, (double)1.};
 
     // buffer size
-    constexpr uint32_t size = 1024 * 1024;
+    std::cout << "[Problem Size] " << size << ", ";
 
     // tolerance
-    //constexpr float epsilon = 0.000001f;
-    constexpr float epsilon = 0.000001f*size;
+    constexpr double epsilon = (double)0.0001;
+    //constexpr float epsilon = 0.000001f*size;
 
     // allocate input and output host buffers in pinned memory accessible by the Platform devices
-    auto in1_h = alpaka::onHost::alloc<float>(host, Vec1D{size});
+    auto in1_h = alpaka::onHost::alloc<double>(host, Vec1D{size});
     auto out_h = alpaka::onHost::allocMirror(host, in1_h);
 
     // fill the input buffers with random data, and the output buffer with zeros
@@ -139,56 +148,57 @@ void testReductionKernel(
     alpaka::onHost::memset(queue, out_d, 0x00);
 
     // launch the 1-dimensional kernel
-    constexpr auto frameExtent = 32u;
-    auto numFrames = Vec1D{size} / frameExtent;
+    constexpr auto frameExtent = 256;
+    auto numFrames = Vec1D{size} / frameExtent /8;
     // The kernel assumes that the problem size is a multiple of the frame size.
-    assert((numFrames * frameExtent).x() == size);
+    assert((numFrames * frameExtent).x() *8 == size);
 
     auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
 
     // fill the output buffer with zeros; the size is known from the buffer objects
     alpaka::onHost::memset(queue, out_d, 0x00);
 
-    std::cout << "Testing VectorAddKernel with vector indices with a grid of " << frameSpec << "\n";
-    
-    auto beginT = std::chrono::high_resolution_clock::now();
+    std::cout << "Grid of " << frameSpec << ", ";
 
+    alpaka::onHost::wait(queue); 
+    auto beginT = std::chrono::high_resolution_clock::now();
     queue
         .enqueue(computeExec, frameSpec, ReductionKernel{}, in1_d.getMdSpan(), out_d.getMdSpan(), Vec1D(size));
-
+    alpaka::onHost::wait(queue);
     auto endT = std::chrono::high_resolution_clock::now();
-    std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's'
-                  << std::endl;
+    std::cout << "[T Kernel Exec] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
 
+
+    alpaka::onHost::wait(queue); 
     beginT = std::chrono::high_resolution_clock::now();
     // copy the results from the device to the host
     alpaka::onHost::memcpy(queue, out_h, out_d);
-
     // wait for all the operations to complete
     alpaka::onHost::wait(queue);
     endT = std::chrono::high_resolution_clock::now();
-    std::cout << "Time for HtoD copy: " << std::chrono::duration<double>(endT - beginT).count() << 's'
-                  << std::endl;
-    
+    std::cout << "[T HtoD Copy] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
+
+    alpaka::onHost::wait(queue); 
     beginT = std::chrono::high_resolution_clock::now();
     auto finalSum = std::accumulate(
         &out_h[0],
         &out_h[size-1],
-        float(0));
+        double(0));
     endT = std::chrono::high_resolution_clock::now();
-    std::cout << "Time for partial sum accumulation: " << std::chrono::duration<double>(endT - beginT).count() << 's'
-                  << std::endl;
+    std::cout << "[T Partial Sum Accumulation] " << std::chrono::duration<double>(endT - beginT).count() << 's'
+                  << ", ";
 
-    float sum = 0;
+    double sum = 0;
     // check the results
     for(uint32_t i = 0; i < size; ++i)
     {
+        //if (i < 5) std::cout << "[num] " << in1_h[i] << std::endl;
         sum += in1_h[i];     
     }
-    std::cout << "acc output: " << finalSum << " host answer: " << sum << std::endl;
-    assert(finalSum < sum + epsilon);
-    assert(finalSum > sum - epsilon);
-    std::cout << "success\n";
+    //std::cout << "acc output: " << finalSum << " host answer: " << sum << std::endl;
+    printf("[Device Output] %f [Host Output] %f, ",finalSum, sum);
+    assert(pow(finalSum - sum,2) < pow(epsilon,2));
+    std::cout << "[Results] " << "success\n";
 }
 
 int example(auto const cfg)
@@ -210,13 +220,15 @@ int example(auto const cfg)
     // use the single host device
     alpaka::onHost::Platform host_platform = alpaka::onHost::makePlatform(alpaka::api::cpu);
     alpaka::onHost::Device host = host_platform.makeDevice(0);
-    std::cout << "Host:   " << alpaka::onHost::getName(host) << "\n\n";
 
     // use the first device
     alpaka::onHost::Device device = platform.makeDevice(0);
-    std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
-    testReductionKernel(host, device, computeExec);
+    uint32_t size = 1024 * 1024;
+    for(int fac = 0; fac < 11; fac++){
+        testReductionKernel(host, device, computeExec, size);
+        size *= 2;
+    }
 
     return EXIT_SUCCESS;
 }
@@ -225,6 +237,7 @@ auto main() -> int
 {
     using namespace alpaka;
     // Execute the example once for each enabled API and executor.
+    std::srand(std::time(0)); // set time as random seed; rand() after this line will automatically use the same seed
     return executeForEach(
         [=](auto const& tag) { return example(tag); },
         onHost::allExecutorsAndApis(onHost::enabledApis));
