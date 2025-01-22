@@ -1,0 +1,232 @@
+#include <alpaka/alpaka.hpp>
+
+#include <cmath> // std::fabs
+#include <iostream>
+#include <numeric> // std::iota
+#include <vector>
+
+// ------------------------------------------------------------------
+// 1. 定义一个简单的归约核函数 (SumReductionKernel)
+// ------------------------------------------------------------------
+
+struct SumReductionKernel
+{
+    //! \tparam TAcc   设备加速器类型
+    //! \tparam T      数据类型（float / double / int 等）
+    //! \param acc     设备加速器
+    //! \param in      待求和的数组指针
+    //! \param out     块级求和结果的输出指针 (每个块输出一个值)
+    //! \param size    数组大小
+    template<typename TAcc, typename T>
+    ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* in, T* out, std::size_t const size) const
+    {
+        // 共享内存，用于块内归约
+      /*  auto sharedMem
+            = alpaka::block::sharedMem<T[], TAcc>(acc, alpaka::getWorkDiv<alpaka::Block, alpaka::Elems>(acc)[0u]);*/
+        //auto sharedMem = onAcc::declareSharedMdArray<T>(acc, CVec<uint32_t, blockThreadExtentMain>{});
+        auto sharedMem = alpaka::block::sharedMem<T[], TAcc>(acc, blockSize);
+
+
+        // 块索引、线程索引、块尺寸、整个网格尺寸
+        auto const blockIdx = alpaka::getIdx<alpaka::Block, alpaka::Elems>(acc)[0];
+        auto const threadIdx = alpaka::getIdx<alpaka::Thread, alpaka::Elems>(acc)[0];
+        auto const blockDim = alpaka::getWorkDiv<alpaka::Block, alpaka::Elems>(acc)[0];
+        auto const gridDim = alpaka::getWorkDiv<alpaka::Grid, alpaka::Elems>(acc)[0];
+
+        // 全局上的线程号
+        // gridDim * blockDim = 所有线程总数
+        // 这里做简单处理，不做多元素加载，实际可做循环。
+        std::size_t globalThreadId = blockIdx * blockDim + threadIdx;
+
+        // 1. 先让线程各自读入对应的全局数据，如果越界则为 0
+        T localSum = T{0};
+        if(globalThreadId < size)
+        {
+            localSum = in[globalThreadId];
+        }
+
+        // 2. 写到共享内存
+        sharedMem[threadIdx] = localSum;
+
+        // 3. 块内归约 (tree-based reduction)
+        //    不断折半, offset: 8,4,2,1..., 具体取决于 blockDim 大小
+        for(std::size_t offset = blockDim / 2; offset > 0; offset /= 2)
+        {
+            // 需要块内线程同步，确保 sharedMem 更新完再进入下一次循环
+            alpaka::syncBlockThreads(acc);
+
+            if(threadIdx < offset)
+            {
+                sharedMem[threadIdx] += sharedMem[threadIdx + offset];
+            }
+        }
+
+        // 4. 块内归约结束后，threadIdx=0 的线程把本块的和写到全局 out[blockIdx] 上
+        alpaka::syncBlockThreads(acc);
+        if(threadIdx == 0)
+        {
+            out[blockIdx] = sharedMem[0];
+        }
+    }
+};
+
+// ------------------------------------------------------------------
+// 2. 用单个 block 做二次归约 (可选)
+//    假设 out 数组大小是 nBlocks，想最终只得到一个值 out[0].
+//    如果不想在 CPU 上归约，可以用这个做二次归约内核。
+// ------------------------------------------------------------------
+struct FinalReductionKernel
+{
+    template<typename TAcc, typename T>
+    ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* in, T* out, std::size_t size) const
+    {
+        auto threadIdx = alpaka::getIdx<alpaka::Thread, alpaka::Elems>(acc)[0];
+        auto blockDim = alpaka::getWorkDiv<alpaka::Block, alpaka::Elems>(acc)[0];
+
+        // 和上面类似，这里共享内存大小与 size 相等即可
+        auto sharedMem = alpaka::block::sharedMem<T[], TAcc>(acc, blockDim);
+
+        T localSum = T{0};
+        if(threadIdx < size)
+        {
+            localSum = in[threadIdx];
+        }
+
+        sharedMem[threadIdx] = localSum;
+
+        for(std::size_t offset = blockDim / 2; offset > 0; offset /= 2)
+        {
+            alpaka::syncBlockThreads(acc);
+            if(threadIdx < offset)
+            {
+                sharedMem[threadIdx] += sharedMem[threadIdx + offset];
+            }
+        }
+
+        if(threadIdx == 0)
+        {
+            out[0] = sharedMem[0];
+        }
+    }
+};
+
+// ------------------------------------------------------------------
+// 3. 一个最简单的测试用例：演示如何调用 SumReductionKernel
+// ------------------------------------------------------------------
+int main()
+{
+    using Dim = alpaka::DimInt<1>; // 1D 问题
+    using Size = std::size_t;
+    using Idx = std::uint32_t;
+
+    // 要求和的数据规模
+    Size const N = 1024 * 1024; // 1M元素
+    // 每个 block 用多少线程
+    Idx blockSize = 256;
+    // 网格大小（需要多少块）
+    Idx gridSize = static_cast<Idx>((N + blockSize - 1) / blockSize);
+
+    // 选择一个平台 & 设备 & 队列 (这里以 CPU acc 为例, Alpaka 也可以用 CUDA/HIP 等)
+    using Acc = alpaka::AccCpuSerial<Dim, Idx>;
+    using Pltf = alpaka::PltfCpu;
+    Pltf platform = alpaka::getDevByIdx<Pltf>(0u);
+    auto devAcc = alpaka::getDevByIdx<Acc>(platform, 0u);
+    auto queue = alpaka::QueueCpuSync{devAcc};
+
+    // 分配内存 (Host & Device)
+    // Host device
+    using DevHost = alpaka::DevCpu;
+    auto devHost = alpaka::getDevByIdx<DevHost>(0);
+
+    // 这里用 float 做示例
+    using T = float;
+
+    // 在 CPU 上分配与初始化数据
+    std::vector<T> hostData(N);
+    // 生成 1,2,3,4,... 方便验证，也可以全部赋值 1.f
+    // std::iota 是 C++ 标准库生成从0开始的线性序列
+    // 这里让第 1 个元素是 1.f, 第 2 个是 2.f, ...
+    std::iota(hostData.begin(), hostData.end(), T(1));
+
+    // Device 端分配输入数据与输出数据
+    auto bufIn = alpaka::allocBuf<T, Dim, Size>(devAcc, alpaka::extent::ExtentStd<Dim>{N});
+    auto bufOut = alpaka::allocBuf<T, Dim, Size>(devAcc, alpaka::extent::ExtentStd<Dim>{gridSize});
+
+    // CPU -> Device 拷贝
+    auto bufHostIn = alpaka::allocBuf<T, Dim, Size>(devHost, alpaka::extent::ExtentStd<Dim>{N});
+    std::copy(hostData.begin(), hostData.end(), bufHostIn.data());
+    alpaka::memcpy(queue, bufIn, bufHostIn, N);
+
+    // 构造 WorkDiv
+    auto workDiv = alpaka::WorkDivMembers<Dim, Size>{
+        {gridSize}, // 网格大小
+        {blockSize}, // 块大小
+        {1} // 线程内处理大小(1D)
+    };
+
+    // 调用我们定义的 SumReductionKernel
+    alpaka::exec<Acc>(queue, workDiv, SumReductionKernel{}, bufIn.data(), bufOut.data(), N);
+    alpaka::wait(queue);
+
+    // 现在，每个块在 bufOut[blockIdx] 写出了“局部块和”
+    // 若网格只有 1 块，就直接是最终和；
+    // 否则还要做二次归约，把 size=gridSize 个值再求和。
+    // 下面给两种处理方式：
+    // (A) 在 CPU 上做二次归约
+    // (B) 用一个新的内核(仅一个块)做二次归约
+
+    // =================
+    // (A) CPU 上做二次归约
+    // =================
+    std::vector<T> partialSums(gridSize);
+    auto bufHostOut = alpaka::allocBuf<T, Dim, Size>(devHost, alpaka::extent::ExtentStd<Dim>{gridSize});
+    // Device -> CPU 拷贝
+    alpaka::memcpy(queue, bufHostOut, bufOut, gridSize);
+    alpaka::wait(queue);
+
+    std::copy(bufHostOut.data(), bufHostOut.data() + gridSize, partialSums.begin());
+    T finalSumCPU = std::accumulate(partialSums.begin(), partialSums.end(), T(0.0f));
+
+    // 打印一下结果
+    std::cout << "[CPU-2nd-Reduction] final sum = " << finalSumCPU << std::endl;
+
+    // 检查是否正确: iota(1..N) 的求和为 N*(N+1)/2
+    T expectedSum = (T) N * (N + 1) * 0.5f;
+    std::cout << "Expected sum = " << expectedSum << std::endl;
+    std::cout << "Difference   = " << std::fabs(finalSumCPU - expectedSum) << std::endl << std::endl;
+
+
+    // =================
+    // (B) 用一个小核在 Device 上做二次归约
+    // =================
+    // 在 Device 上再分配 1 个元素输出
+    auto bufFinal = alpaka::allocBuf<T, Dim, Size>(devAcc, alpaka::extent::ExtentStd<Dim>{1});
+    // 构造 WorkDiv: 只需要 1 block, blockSize >= gridSize
+    Idx blockSize2 = 256; // 保证大于等于 gridSize
+    auto workDiv2 = alpaka::WorkDivMembers<Dim, Size>{
+        {1}, // 1个块
+        {blockSize2}, // 块大小
+        {1}};
+
+    // 注意：如果 gridSize > blockSize2，需要再分阶段处理（或改大 blockSize2）。
+    alpaka::exec<Acc>(
+        queue,
+        workDiv2,
+        FinalReductionKernel{},
+        bufOut.data(), // 这里 in = bufOut(存局部和)
+        bufFinal.data(), // 这里 out = bufFinal(只有1个值)
+        gridSize); // 局部和的大小
+    alpaka::wait(queue);
+
+    // 拷回最终结果
+    auto bufHostFinal = alpaka::allocBuf<T, Dim, Size>(devHost, alpaka::extent::ExtentStd<Dim>{1});
+    alpaka::memcpy(queue, bufHostFinal, bufFinal, 1);
+    alpaka::wait(queue);
+
+    T finalSumDevice = bufHostFinal.data()[0];
+    std::cout << "[Device-2nd-Reduction] final sum = " << finalSumDevice << std::endl;
+    std::cout << "Expected sum = " << expectedSum << std::endl;
+    std::cout << "Difference   = " << std::fabs(finalSumDevice - expectedSum) << std::endl;
+
+    return 0;
+}

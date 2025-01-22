@@ -1,0 +1,16 @@
+﻿{
+    "configurations": [
+        {
+            "name": "x64-Debug",
+            "generator": "Ninja",
+            "configurationType": "Debug",
+            "inheritEnvironments": [],
+            "buildRoot": "${projectDir}\\out\\build\\${name}",
+            "installRoot": "${projectDir}\\out\\install\\${name}",
+            "cmakeCommandArgs": "-Dalpaka_API_OMP=ON -Dalpaka_TESTING=ON -Dalpaka_BENCHMARKS=ON -Dalpaka_EXAMPLES=ON -DCMAKE_CXX_STANDARD=20",
+            "buildCommandArgs": "",
+            "ctestCommandArgs": "",
+            "intelliSenseMode": "windows-clang-x64"
+        }
+    ]
+}
