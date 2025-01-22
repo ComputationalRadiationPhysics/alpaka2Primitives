@@ -107,8 +107,9 @@ void testReductionKernel(
     auto computeExec, auto size)
 {
 
-    std::cout << "[Host] " << alpaka::onHost::getName(host) << ", ";
-    std::cout << "[Device] " << alpaka::onHost::getName(device) << ", ";
+    //std::cout << "[Host] " << alpaka::onHost::getName(host) << ", ";
+    //std::cout << "[Device] " << alpaka::onHost::getName(device) << ", ";
+    std::cout << alpaka::onHost::getName(device) << ", ";
 
     // random number generator with a gaussian distribution
     //std::random_device rd{};
@@ -117,7 +118,8 @@ void testReductionKernel(
     std::normal_distribution<double> dist{(double)0.01, (double)1.};
 
     // buffer size
-    std::cout << "[Problem Size] " << size << ", ";
+    //std::cout << "[Problem Size] " << size << ", ";
+    std::cout << size << ", ";
 
     // tolerance
     constexpr double epsilon = (double)0.0001;
@@ -158,7 +160,7 @@ void testReductionKernel(
     // fill the output buffer with zeros; the size is known from the buffer objects
     alpaka::onHost::memset(queue, out_d, 0x00);
 
-    std::cout << "Grid of " << frameSpec << ", ";
+    //std::cout << "Grid of " << frameSpec << ", ";
 
     alpaka::onHost::wait(queue); 
     auto beginT = std::chrono::high_resolution_clock::now();
@@ -166,7 +168,8 @@ void testReductionKernel(
         .enqueue(computeExec, frameSpec, ReductionKernel{}, in1_d.getMdSpan(), out_d.getMdSpan(), Vec1D(size));
     alpaka::onHost::wait(queue);
     auto endT = std::chrono::high_resolution_clock::now();
-    std::cout << "[T Kernel Exec] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
+    //std::cout << "[T Kernel Exec] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
+    std::cout << std::chrono::duration<double>(endT - beginT).count() << ", ";
 
 
     alpaka::onHost::wait(queue); 
@@ -176,7 +179,7 @@ void testReductionKernel(
     // wait for all the operations to complete
     alpaka::onHost::wait(queue);
     endT = std::chrono::high_resolution_clock::now();
-    std::cout << "[T HtoD Copy] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
+    //std::cout << "[T HtoD Copy] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
 
     alpaka::onHost::wait(queue); 
     beginT = std::chrono::high_resolution_clock::now();
@@ -185,8 +188,7 @@ void testReductionKernel(
         &out_h[size-1],
         double(0));
     endT = std::chrono::high_resolution_clock::now();
-    std::cout << "[T Partial Sum Accumulation] " << std::chrono::duration<double>(endT - beginT).count() << 's'
-                  << ", ";
+    //std::cout << "[T Partial Sum Accumulation] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
 
     double sum = 0;
     // check the results
@@ -196,9 +198,10 @@ void testReductionKernel(
         sum += in1_h[i];     
     }
     //std::cout << "acc output: " << finalSum << " host answer: " << sum << std::endl;
-    printf("[Device Output] %f [Host Output] %f, ",finalSum, sum);
+    //printf("[Device Output] %f [Host Output] %f, ",finalSum, sum);
     assert(pow(finalSum - sum,2) < pow(epsilon,2));
-    std::cout << "[Results] " << "success\n";
+    //std::cout << "[Results] " << "success\n";
+    std::cout << "success\n";
 }
 
 int example(auto const cfg)
@@ -238,6 +241,7 @@ auto main() -> int
     using namespace alpaka;
     // Execute the example once for each enabled API and executor.
     std::srand(std::time(0)); // set time as random seed; rand() after this line will automatically use the same seed
+    std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl;
     return executeForEach(
         [=](auto const& tag) { return example(tag); },
         onHost::allExecutorsAndApis(onHost::enabledApis));
