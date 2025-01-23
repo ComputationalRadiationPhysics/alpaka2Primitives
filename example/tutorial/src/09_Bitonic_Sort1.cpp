@@ -10,21 +10,17 @@
 #include <limits>
 #include <vector>
 
-
-
 using namespace alpaka;
 
-
-
 //-------------------------------------
-// 辅助类型与常量定义
+// Helper types and constant definitions
 //-------------------------------------
-using UInt = uint32_t;
-using Vec1D = alpaka::Vec<std::uint32_t, 1u>;
-static constexpr UInt INF = std::numeric_limits<UInt>::max();
+using UInt = uint32_t; // Alias for unsigned 32-bit integer
+using Vec1D = alpaka::Vec<std::uint32_t, 1u>; // 1D vector type using Alpaka
+static constexpr UInt INF = std::numeric_limits<UInt>::max(); // Constant representing infinity
 
 //-------------------------------------
-// 计算 >= n 的最小2次幂
+// Calculate the smallest power of 2 >= n
 //-------------------------------------
 UInt nextPowerOfTwo(UInt n)
 {
@@ -35,7 +31,7 @@ UInt nextPowerOfTwo(UInt n)
 }
 
 //-------------------------------------
-// 打印数组
+// Print the elements of an array
 //-------------------------------------
 void printArray(std::vector<UInt> const& arr, UInt n)
 {
@@ -50,38 +46,44 @@ void printArray(std::vector<UInt> const& arr, UInt n)
 }
 
 //-------------------------------------
-// 比较交换内核
+// Bitonic Compare-and-Swap Kernel (经典的双调排序实现)
 //-------------------------------------
-struct CompareSwapKernel
+struct BitonicCompareSwapKernel
 {
     template<typename TAcc>
     ALPAKA_FN_ACC void operator()(
         TAcc const& acc,
-        auto const inOut,
-        UInt start,
-        UInt length,
-        UInt dist,
-        bool ascending) const
+        auto inOut, // 数据数组
+        UInt n, // 数组大小
+        UInt k, // 当前子序列总长度
+        UInt j // 当前比较步长
+    ) const
     {
-        auto [threadIndex] = acc[alpaka::layer::thread].idx();
-        auto [blockDimension] = acc[alpaka::layer::thread].count();
-        auto [blockIndex] = acc[alpaka::layer::block].idx();
-        auto [gridDimension] = acc[alpaka::layer::block].count();
+        // 这里采用典型的 grid-stride loop 或类似方式来并行遍历所有 i
+        auto threadIdx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];
+        auto numThreads = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];
 
-        auto linearGridThreadIndex = blockDimension * blockIndex + threadIndex;
-        auto linearGridSize = gridDimension * blockDimension;
-
-        // Grid-strided loop
-        for(UInt globalIdx = linearGridThreadIndex; globalIdx < length; globalIdx += linearGridSize)
+        // 并行遍历 [0..n-1]
+        for(UInt i = threadIdx; i < n; i += numThreads)
         {
-            if(globalIdx >= start && globalIdx < (start + length - dist) && (globalIdx + dist) < (start + length))
+            // 计算 partner 索引
+            UInt partner = i ^ j; // 与经典算法一致
+
+            // 确保 partner 在范围内
+            if(partner < n)
             {
-                UInt lhs = inOut[globalIdx];
-                UInt rhs = inOut[globalIdx + dist];
+                // 判断这一段是要升序还是降序： (i & k) == 0 则升序，否则降序
+                bool ascending = ((i & k) == 0);
+
+                // 取出要比较的元素
+                UInt lhs = inOut[i];
+                UInt rhs = inOut[partner];
+
+                // 按照 ascending 决定是否交换
                 if((ascending && lhs > rhs) || (!ascending && lhs < rhs))
                 {
-                    inOut[globalIdx] = rhs;
-                    inOut[globalIdx + dist] = lhs;
+                    inOut[i] = rhs;
+                    inOut[partner] = lhs;
                 }
             }
         }
@@ -89,7 +91,7 @@ struct CompareSwapKernel
 };
 
 //-------------------------------------
-// 使用 Alpaka 实现的 Bitonic Sort
+// Bitonic Sort Using Alpaka
 //-------------------------------------
 int bitonicSortWithAlpaka(
     alpaka::onHost::concepts::Device auto host,
@@ -99,63 +101,72 @@ int bitonicSortWithAlpaka(
     UInt n)
 {
     //-----------------------------------------
-    // 创建队列
+    // Create a queue for task execution
     //-----------------------------------------
     alpaka::onHost::Queue queue = device.makeQueue();
+
     //-----------------------------------------
-    // 分配内存
+    // Allocate memory
     //-----------------------------------------
     auto hostBuf = alpaka::onHost::alloc<UInt>(host, Vec1D{n});
     auto deviceBuf = alpaka::onHost::allocMirror(device, hostBuf);
 
-    // 初始化主机缓冲区
+    // Initialize host buffer with input data
     for(UInt i = 0; i < n; ++i)
     {
         hostBuf[i] = arr[i];
     }
 
-    // 主机到设备拷贝
+    // Copy data from host to device
     alpaka::onHost::memcpy(queue, deviceBuf, hostBuf);
     alpaka::onHost::wait(queue);
 
     //-----------------------------------------
-    // 配置核函数线程分布
+    // Execute Bitonic Sort (经典两层循环)
     //-----------------------------------------
+    // 准备网格大小
     UInt threadsPerBlock = 256u;
     UInt blocks = (n + threadsPerBlock - 1u) / threadsPerBlock;
-
     auto threadSpec = alpaka::onHost::ThreadSpec{Vec1D{blocks}, Vec1D{threadsPerBlock}};
 
-    //-----------------------------------------
-    // Bitonic Sort 核心逻辑
-    //-----------------------------------------
-    for(UInt length = 2u; length <= n; length <<= 1u)
+    // 双调排序核心：外层 k（子序列大小），内层 j（步长）
+    // k 从 2 翻倍到 n
+    for(UInt k = 2u; k <= n; k <<= 1u)
     {
-        for(UInt start = 0u; start < n; start += length)
+        // j 从 k/2 一路减到 1
+        for(UInt j = (k >> 1u); j > 0u; j >>= 1u)
         {
-            bool ascending = ((start / length) % 2u) == 0u;
-            for(UInt dist = (length >> 1u); dist > 0u; dist >>= 1u)
-            {
-                queue.enqueue(
-                    computeExec,
-                    threadSpec,
-                    CompareSwapKernel{},
-                    deviceBuf.getMdSpan(),
-                    start,
-                    length,
-                    dist,
-                    ascending);
-                alpaka::onHost::wait(queue);
-            }
+            // 向队列中提交 Kernel，用 (k, j) 指定当前阶段
+            queue.enqueue(computeExec, threadSpec, BitonicCompareSwapKernel{}, deviceBuf.getMdSpan(), n, k, j);
+            alpaka::onHost::wait(queue);
         }
     }
 
     //-----------------------------------------
-    // 设备到主机拷贝结果
+    // 拷回结果，并做演示性修改
     //-----------------------------------------
+    // 1. 从 Device 拷贝回 Host
     alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
     alpaka::onHost::wait(queue);
 
+    // 2. 修改偶数为偶数+1
+    for(UInt i = 0; i < n; ++i)
+    {
+        if(hostBuf[i] % 2 == 0)
+        {
+            hostBuf[i] += 1;
+        }
+    }
+
+    // 3. 再次拷回 Device
+    alpaka::onHost::memcpy(queue, deviceBuf, hostBuf);
+    alpaka::onHost::wait(queue);
+
+    // 4. 最终结果再一次拷回 Host
+    alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
+    alpaka::onHost::wait(queue);
+
+    // 把最终结果写回 vector
     for(UInt i = 0; i < n; ++i)
     {
         arr[i] = hostBuf[i];
@@ -165,33 +176,39 @@ int bitonicSortWithAlpaka(
 }
 
 //-------------------------------------
-// 使用 cfg 的 example 函数
+// Example function using cfg
 //-------------------------------------
 int example(auto const cfg)
 {
     auto deviceApi = cfg[alpaka::object::api];
     auto computeExec = cfg[alpaka::object::exec];
 
-    // 初始化平台和设备
+    // Initialize the accelerator platform for the selected device API
     alpaka::onHost::Platform platform = alpaka::onHost::makePlatform(deviceApi);
-    if(alpaka::onHost::getDeviceCount(platform) == 0)
+
+    // Check if at least one device is available
+    std::size_t nDev = alpaka::onHost::getDeviceCount(platform);
+    if(nDev == 0)
     {
-        std::cerr << "No devices available for the selected API.\n";
         return EXIT_FAILURE;
     }
 
-    alpaka::onHost::Platform hostPlatform = alpaka::onHost::makePlatform(alpaka::api::cpu);
-    alpaka::onHost::Device host = hostPlatform.makeDevice(0);
+    // Create a host platform and device
+    alpaka::onHost::Platform host_platform = alpaka::onHost::makePlatform(alpaka::api::cpu);
+    alpaka::onHost::Device host = host_platform.makeDevice(0);
+    std::cout << "Host:   " << alpaka::onHost::getName(host) << "\n\n";
+
+    // Select the first device from the accelerator platform
     alpaka::onHost::Device device = platform.makeDevice(0);
+    std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
-    std::cout << "Host:   " << alpaka::onHost::getName(host) << "\n";
-    std::cout << "Device: " << alpaka::onHost::getName(device) << "\n";
-
-    // 准备排序数据
-    UInt size = 1024;
-    UInt paddedSize = nextPowerOfTwo(size);
+    // Prepare the data for sorting
+    UInt size = 2048u; // 原始大小
+    UInt paddedSize = nextPowerOfTwo(size); // 向上补到 2 的幂
     std::vector<UInt> data(paddedSize, INF);
-    std::srand(static_cast<unsigned>(std::time(nullptr)));
+
+    // 随机填充前面 size 个元素
+    std::srand(1234); // 固定随机种子
     for(UInt i = 0; i < size; ++i)
     {
         data[i] = static_cast<UInt>(std::rand() % 1000);
@@ -200,7 +217,7 @@ int example(auto const cfg)
     std::cout << "Unsorted array:\n";
     printArray(data, size);
 
-    // 调用 Bitonic Sort
+    // Perform Bitonic Sort using Alpaka
     if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize) == EXIT_SUCCESS)
     {
         std::cout << "Sorted array:\n";
@@ -211,12 +228,12 @@ int example(auto const cfg)
 }
 
 //-------------------------------------
-// 主函数
+// Main function
 //-------------------------------------
-auto main() -> int
+int main()
 {
-    // 对所有启用的 API 和执行器进行测试
+    // 测试 example 函数 (对所有已启用的 Alpaka API/Executor)
     return alpaka::executeForEach(
         [=](auto const& tag) { return example(tag); },
-        onHost::allExecutorsAndApis(onHost::enabledApis));
+        alpaka::onHost::allExecutorsAndApis(alpaka::onHost::enabledApis));
 }
