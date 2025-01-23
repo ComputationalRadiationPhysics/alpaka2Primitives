@@ -60,15 +60,6 @@ struct CompareSwapKernel
         auto dist, // Distance between elements to compare
         bool ascending) const // Sorting direction (true for ascending)
     {
-        // Retrieve thread and block information
-        //auto [threadIndex] = acc[alpaka::layer::thread].idx();
-        //auto [blockDimension] = acc[alpaka::layer::thread].count();
-        //auto [blockIndex] = acc[alpaka::layer::block].idx();
-        //auto [gridDimension] = acc[alpaka::layer::block].count();
-
-        // Calculate linear thread index and total grid size
-        //auto linearGridThreadIndex = blockDimension * blockIndex + threadIndex;
-        //auto linearGridSize = gridDimension * blockDimension;
         Vec1D linearNumFrames = acc[alpaka::frame::count].product();
         auto frameExtent = acc[alpaka::frame::extent];
         auto frameDataExtent = linearNumFrames*frameExtent;
@@ -76,25 +67,6 @@ struct CompareSwapKernel
         auto traverseInFrame = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtent});
         auto traverseOverFrames = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::blocksInGrid, alpaka::IdxRange{alpaka::CVec<uint32_t, 0u>{}, frameDataExtent, linearFrameExtent});
         
-
-/*
-        // Grid-strided loop to handle all elements assigned to the thread
-        for(UInt globalIdx = linearGridThreadIndex; globalIdx < length; globalIdx += linearGridSize)
-        {
-            // Ensure indices are within the valid range
-            if(globalIdx >= start && globalIdx < (start + length - dist) && (globalIdx + dist) < (start + length))
-            {
-                // Perform comparison and swap if necessary
-                UInt lhs = inOut[globalIdx];
-                UInt rhs = inOut[globalIdx + dist];
-                if((ascending && lhs > rhs) || (!ascending && lhs < rhs))
-                {
-                    inOut[globalIdx] = rhs;
-                    inOut[globalIdx + dist] = lhs;
-                }
-            }
-        }
-        */
 
         for(auto frameIdx : traverseOverFrames){
             for(auto elemIdx : traverseInFrame){
@@ -157,11 +129,13 @@ int bitonicSortWithAlpaka(
     auto numFrames = Vec1D{n} / frameExtent /4;
     auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
 
+    //-----------------------------------------
     // Perform bitonic sort
     // The bitonic sort process is controlled by three nested loops.
     // The outer loop manages the length of the segments being sorted.
     // The middle loop iterates over each segment in the array.
     // The innermost loop reduces the comparison distance (dist) within each segment.
+    //-----------------------------------------
 
     for(UInt length = 2u; length <= n; length <<= 1u) // Outer loop: Gradually increase the segment size to sort.
     {
@@ -220,12 +194,6 @@ int bitonicSortWithAlpaka(
                  */
 
                 alpaka::onHost::wait(queue); // Synchronize the host with the GPU.
-                /*
-                 * Purpose:
-                 * - Ensure that the current kernel execution is completed before proceeding to the next iteration.
-                 * - This guarantees that all comparisons and swaps at the current distance are finished
-                 *   before reducing the distance and continuing.
-                 */
             }
         }
     }
