@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
-#include <iostream> 
+#include <iostream>
 #include <limits>
 #include <vector>
 
@@ -62,29 +62,57 @@ struct CompareSwapKernel
     {
         Vec1D linearNumFrames = acc[alpaka::frame::count].product();
         auto frameExtent = acc[alpaka::frame::extent];
-        auto frameDataExtent = linearNumFrames*frameExtent;
+        auto frameDataExtent = linearNumFrames * frameExtent;
         Vec1D linearFrameExtent = frameExtent.product();
-        auto traverseInFrame = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtent});
-        auto traverseOverFrames = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::blocksInGrid, alpaka::IdxRange{alpaka::CVec<uint32_t, 0u>{}, frameDataExtent, linearFrameExtent});
-        
+        auto traverseInFrame
+            = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtent});
+        auto traverseOverFrames = alpaka::onAcc::makeIdxMap(
+            acc,
+            alpaka::onAcc::worker::blocksInGrid,
+            alpaka::IdxRange{alpaka::CVec<uint32_t, 0u>{}, frameDataExtent, linearFrameExtent});
 
-        for(auto frameIdx : traverseOverFrames){
-            for(auto elemIdx : traverseInFrame){
-                for(auto [i]: alpaka::onAcc::makeIdxMap(acc, 
-                    alpaka::onAcc::WorkerGroup{frameIdx + elemIdx, frameDataExtent}, 
-                    alpaka::IdxRange{Vec1D(length)})) {
-                    if (i >= start && i < start + length - dist) {
+
+        for(auto frameIdx : traverseOverFrames)
+        {
+            for(auto elemIdx : traverseInFrame)
+            {
+                for(auto [i] : alpaka::onAcc::makeIdxMap(
+                        acc,
+                        alpaka::onAcc::WorkerGroup{frameIdx + elemIdx, frameDataExtent},
+                        alpaka::IdxRange{Vec1D{start}, Vec1D{start + length - dist}}))
+                {
+                    // if (i >= start && i < start + length - dist && i + dist < start + length)
+                    {
                         auto ll = inOut[i];
-                        auto rr = inOut[i+dist];
-                        if((ascending && ll > rr) || (!ascending && ll < rr)){
+                        auto rr = inOut[i + dist];
+                        if((ascending && ll > rr) || (!ascending && ll < rr))
+                        {
                             inOut[i] = rr;
-                            inOut[i+dist] = ll;
+                            inOut[i + dist] = ll;
                         }
                     }
                 }
             }
         }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 };
 
 //-------------------------------------
@@ -125,8 +153,8 @@ int bitonicSortWithAlpaka(
     UInt blocks = (n + threadsPerBlock - 1u) / threadsPerBlock; // Number of blocks
     auto threadSpec = alpaka::onHost::ThreadSpec{Vec1D{blocks}, Vec1D{threadsPerBlock}};
 
-    constexpr auto frameExtent = 256;
-    auto numFrames = Vec1D{n} / frameExtent /4;
+    constexpr auto frameExtent = 256u;
+    auto numFrames = Vec1D{alpaka::core::divCeil(n, frameExtent * 4)};
     auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
 
     //-----------------------------------------
@@ -205,24 +233,24 @@ int bitonicSortWithAlpaka(
     alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
     alpaka::onHost::wait(queue);
 
-    // Modify host data (e.g., increment even numbers)
-    for(UInt i = 0; i < n; ++i)
-    {
-        if(hostBuf[i] % 2 == 0) // Increment even numbers
-        {
-            hostBuf[i] += 1;
-        }
-    }
+    //// Modify host data (e.g., increment even numbers)
+    //for(UInt i = 0; i < n; ++i)
+    //{
+    //    if(hostBuf[i] % 2 == 0) // Increment even numbers
+    //    {
+    //        hostBuf[i] += 1;
+    //    }
+    //}
 
-    // Copy modified data back to device
-    alpaka::onHost::memcpy(queue, deviceBuf, hostBuf);
-    alpaka::onHost::wait(queue);
+    //// Copy modified data back to device
+    //alpaka::onHost::memcpy(queue, deviceBuf, hostBuf);
+    //alpaka::onHost::wait(queue);
 
-    //-----------------------------------------
-    // Copy final sorted data from device to host
-    //-----------------------------------------
-    alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
-    alpaka::onHost::wait(queue);
+    ////-----------------------------------------
+    //// Copy final sorted data from device to host
+    ////-----------------------------------------
+    //alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
+    //alpaka::onHost::wait(queue);
 
     // Update the input array with sorted data
     for(UInt i = 0; i < n; ++i)
@@ -262,7 +290,7 @@ int example(auto const cfg)
     std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
     // Prepare the data for sorting
-    UInt size = 2048; // Original size of the array
+    UInt size = 1024; // Original size of the array
     UInt paddedSize = nextPowerOfTwo(size); // Adjust to the next power of two
     std::vector<UInt> data(paddedSize, INF); // Initialize with INF for padding
     std::srand(1234); // Seed for reproducibility
