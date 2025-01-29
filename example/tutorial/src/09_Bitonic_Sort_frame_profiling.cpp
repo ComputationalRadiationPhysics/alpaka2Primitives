@@ -108,7 +108,7 @@ int bitonicSortWithAlpaka(
     auto computeExec, // Alpaka execution object
     std::vector<UInt>& arr, // Array to sort
     UInt n,
-    double& totalKernelTime) 
+    double& totalKernelTime) // Size of the array
 {
     
     //-----------------------------------------
@@ -252,7 +252,7 @@ int bitonicSortWithAlpaka(
 //-------------------------------------
 // Example function using cfg
 //-------------------------------------
-int example(auto const cfg)
+int example(auto const cfg, auto in_size)
 {
     // Retrieve the device API and execution policy from the configuration
     auto deviceApi = cfg[alpaka::object::api];
@@ -278,7 +278,7 @@ int example(auto const cfg)
     //std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
     // Prepare the data for sorting
-    UInt size = 1024; // Original size of the array
+    UInt size = in_size; // Original size of the array
     UInt paddedSize = nextPowerOfTwo(size); // Adjust to the next power of two
     std::vector<UInt> data(paddedSize, INF); // Initialize with INF for padding
     std::srand(1234); // Seed for reproducibility
@@ -290,7 +290,7 @@ int example(auto const cfg)
     //std::cout << "Unsorted array:\n";
     //printArray(data, size); // Print the unsorted array
 
-    double totalKernelTime = 0.0; // ÉùÃ÷¼ÆÊ±±äÁ¿
+    double totalKernelTime = 0.0; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½
     // Perform Bitonic Sort using Alpaka
     if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize,totalKernelTime) == EXIT_SUCCESS)
     {
@@ -299,14 +299,14 @@ int example(auto const cfg)
     }
 
         
-    int result = bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime); // ´«µÝ¼ÆÊ±²ÎÊý
+    int result = bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime); // ï¿½ï¿½ï¿½Ý¼ï¿½Ê±ï¿½ï¿½ï¿½ï¿½
 
     
 
 
-            // °´Ö¸¶¨¸ñÊ½Êä³ö½á¹û
+            // ï¿½ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     std::cout << alpaka::onHost::getName(device) << ", " << paddedSize << ", " << totalKernelTime << ", "
-              << (result == EXIT_SUCCESS ? "success" : "failure") << std::endl;
+              << (result == EXIT_SUCCESS ? "success" : "failure") << std::endl << std::flush;
 
 
 
@@ -322,9 +322,14 @@ int example(auto const cfg)
 //-------------------------------------
 int main()
 {
-    std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl;
+    std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl  << std::flush;
     // Test the example function with all enabled APIs and executors
-    return alpaka::executeForEach(
-        [=](auto const& tag) { return example(tag); },
+    UInt size = 1024*1024;
+    for(auto i = 0; i < 11; i++){
+        size *= pow(2,i);
+        alpaka::executeForEach(
+        [=](auto const& tag) { return example(tag, size); },
         alpaka::onHost::allExecutorsAndApis(alpaka::onHost::enabledApis));
+    }
+    return 0;
 }
