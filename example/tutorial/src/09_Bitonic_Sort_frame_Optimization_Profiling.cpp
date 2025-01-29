@@ -10,7 +10,7 @@
 #include <limits>
 #include <vector>
 #include <chrono>
-#include <chrono>
+
 using namespace alpaka;
 
 //-------------------------------------
@@ -56,47 +56,53 @@ struct CompareSwapKernel
     ALPAKA_FN_ACC void operator()(
         TAcc const& acc, // Alpaka accelerator object
         auto inOut, // Raw pointer to input/output data array
-        auto start, // Starting index of the segment
         auto length, // Length of the segment
         auto dist, // Distance between elements to compare
-        bool ascending) const // Sorting direction (true for ascending)
+        uint32_t paddedSize) const // Sorting direction (true for ascending)
     {
-        Vec1D linearNumFrames = acc[alpaka::frame::count].product();
-        auto frameExtent = acc[alpaka::frame::extent];
-        auto frameDataExtent = linearNumFrames * frameExtent;
-        Vec1D linearFrameExtent = frameExtent.product();
+        // x is the number of frames required to iterate over length elements
+        // y is the number of segments in older versions called Middle loop on the host side
+        auto numFrames = acc[alpaka::frame::count];
+        auto frameExtents = acc[alpaka::frame::extent];
+        auto frameDataExtents = numFrames * frameExtents;
+
         auto traverseInFrame
-            = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtent});
-        auto traverseOverFrames = alpaka::onAcc::makeIdxMap(
+            = alpaka::onAcc::makeIdxMap(acc, alpaka::onAcc::worker::threadsInBlock, alpaka::IdxRange{frameExtents});
+
+        auto traverseOverFrames = onAcc::makeIdxMap(
             acc,
-            alpaka::onAcc::worker::blocksInGrid,
-            alpaka::IdxRange{alpaka::CVec<uint32_t, 0u>{}, frameDataExtent, linearFrameExtent});
+            onAcc::worker::blocksInGrid,
+            IdxRange{alpaka::CVec<uint32_t, 0u, 0u>{}, frameDataExtents, frameExtents});
 
 
+        // 2D for loop
         for(auto frameIdx : traverseOverFrames)
         {
-            for(auto elemIdx : traverseInFrame)
+            auto segment = frameIdx.y();
+            auto start = segment * length;
+            bool ascending = ((start / length) % 2u) == 0u;
+
+            // iterate only over the X-dimension
+            // 1D for loop
+            for(auto elemIdx : traverseInFrame[alpaka::CVec<uint32_t, 1u>{}])
             {
+                // 1D for loop
                 for(auto [i] : alpaka::onAcc::makeIdxMap(
                         acc,
-                        alpaka::onAcc::WorkerGroup{frameIdx + elemIdx, frameDataExtent},
+                        alpaka::onAcc::WorkerGroup{Vec1D{elemIdx.x() + frameIdx.x()}, Vec1D{frameDataExtents.x()}},
                         alpaka::IdxRange{Vec1D{start}, Vec1D{start + length - dist}}))
                 {
-                    // if (i >= start && i < start + length - dist && i + dist < start + length)
+                    auto ll = inOut[i];
+                    auto rr = inOut[i + dist];
+                    if((ascending && ll > rr) || (!ascending && ll < rr))
                     {
-                        auto ll = inOut[i];
-                        auto rr = inOut[i + dist];
-                        if((ascending && ll > rr) || (!ascending && ll < rr))
-                        {
-                            inOut[i] = rr;
-                            inOut[i + dist] = ll;
-                        }
+                        inOut[i] = rr;
+                        inOut[i + dist] = ll;
                     }
                 }
             }
         }
     }
-
 };
 
 //-------------------------------------
@@ -110,7 +116,6 @@ int bitonicSortWithAlpaka(
     UInt n,
     double& totalKernelTime) 
 {
-    
     //-----------------------------------------
     // Create a queue for task execution
     //-----------------------------------------
@@ -135,14 +140,6 @@ int bitonicSortWithAlpaka(
     //-----------------------------------------
     // Execute kernel on device memory
     //-----------------------------------------
-    UInt threadsPerBlock = 256u; // Number of threads per block
-    UInt blocks = (n + threadsPerBlock - 1u) / threadsPerBlock; // Number of blocks
-    auto threadSpec = alpaka::onHost::ThreadSpec{Vec1D{blocks}, Vec1D{threadsPerBlock}};
-
-    constexpr auto frameExtent = 256u;
-    auto numFrames = Vec1D{alpaka::core::divCeil(n, frameExtent * 4)};
-    auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
-
     //-----------------------------------------
     // Perform bitonic sort
     // The bitonic sort process is controlled by three nested loops.
@@ -151,7 +148,7 @@ int bitonicSortWithAlpaka(
     // The innermost loop reduces the comparison distance (dist) within each segment.
     //-----------------------------------------
 
-    for(UInt length = 2u; length <= n; length <<= 1u) // Outer loop: Gradually increase the segment size to sort.
+    for(UInt length = 2u; length <= n; length *= 2u) // Outer loop: Gradually increase the segment size to sort.
     {
         /*
          * Purpose:
@@ -161,7 +158,7 @@ int bitonicSortWithAlpaka(
          * - The segment size doubles on each iteration until it equals the total size of the array (`n`).
          */
 
-        for(UInt start = 0u; start < n; start += length) // Middle loop: Iterate over each segment in the array.
+        // for(UInt start = 0u; start < n; start += length) // Middle loop: Iterate over each segment in the array.
         {
             /*
              * Purpose:
@@ -170,7 +167,7 @@ int bitonicSortWithAlpaka(
              * - The loop increments by `length` so that each iteration processes the next segment.
              */
 
-            bool ascending = ((start / length) % 2u) == 0u;
+
             /*
              * Purpose:
              * - Determine the sorting order (ascending or descending) for the current segment.
@@ -179,8 +176,8 @@ int bitonicSortWithAlpaka(
              * - This alternation ensures that bitonic sequences are formed, which are necessary for the bitonic merge.
              */
 
-            for(UInt dist = (length >> 1u); dist > 0u;
-                dist >>= 1u) // Inner loop: Perform comparisons at decreasing distances.
+            for(UInt dist = (length / 2u); dist > 0u;
+                dist /= 2u) // Inner loop: Perform comparisons at decreasing distances.
             {
                 /*
                  * Purpose:
@@ -189,16 +186,26 @@ int bitonicSortWithAlpaka(
                  * - After each iteration, the distance is halved until `dist = 1`, meaning adjacent elements are
                  * compared.
                  */
+
+                auto numSegments = alpaka::core::divCeil(n, length);
+                constexpr auto frameExtent = 8u;
+                auto numFrames = alpaka::core::divCeil(length, frameExtent);
+                auto frameSpec = alpaka::onHost::FrameSpec{
+                    Vec2D{numSegments, numFrames},
+                    alpaka::CVec<uint32_t, 1u, frameExtent>{}};
+
+
                 auto startTime = std::chrono::high_resolution_clock::now();
+
+
                 queue.enqueue(
                     computeExec, // The execution policy for the computation (e.g., GPU execution).
                     frameSpec, // The frame specification that defines thread and block layout.
                     CompareSwapKernel{}, // The kernel function to perform the comparison and swapping.
                     deviceBuf.getMdSpan(), // A pointer to the device buffer containing the data to be sorted.
-                    start, // The starting index of the current segment.
                     length, // The size of the current segment.
                     dist, // The distance between elements being compared in this iteration.
-                    ascending // The sorting order for this segment (true = ascending, false = descending).
+                    n // The sorting order for this segment (true = ascending, false = descending).
                 );
                 /*
                  * Purpose:
@@ -208,8 +215,13 @@ int bitonicSortWithAlpaka(
                  */
 
                 alpaka::onHost::wait(queue); // Synchronize the host with the GPU.
+
+
                 auto endTime = std::chrono::high_resolution_clock::now();
                 totalKernelTime += std::chrono::duration<double>(endTime - startTime).count();
+
+
+
             }
         }
     }
@@ -220,25 +232,6 @@ int bitonicSortWithAlpaka(
     //-----------------------------------------
     alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
     alpaka::onHost::wait(queue);
-
-    //// Modify host data (e.g., increment even numbers)
-    //for(UInt i = 0; i < n; ++i)
-    //{
-    //    if(hostBuf[i] % 2 == 0) // Increment even numbers
-    //    {
-    //        hostBuf[i] += 1;
-    //    }
-    //}
-
-    //// Copy modified data back to device
-    //alpaka::onHost::memcpy(queue, deviceBuf, hostBuf);
-    //alpaka::onHost::wait(queue);
-
-    ////-----------------------------------------
-    //// Copy final sorted data from device to host
-    ////-----------------------------------------
-    //alpaka::onHost::memcpy(queue, hostBuf, deviceBuf);
-    //alpaka::onHost::wait(queue);
 
     // Update the input array with sorted data
     for(UInt i = 0; i < n; ++i)
@@ -278,7 +271,7 @@ int example(auto const cfg)
     //std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
     // Prepare the data for sorting
-    UInt size = 1024; // Original size of the array
+    UInt size = 1024*1024; // Original size of the array
     UInt paddedSize = nextPowerOfTwo(size); // Adjust to the next power of two
     std::vector<UInt> data(paddedSize, INF); // Initialize with INF for padding
     std::srand(1234); // Seed for reproducibility
@@ -291,30 +284,24 @@ int example(auto const cfg)
     //printArray(data, size); // Print the unsorted array
 
     double totalKernelTime = 0.0; // 声明计时变量
+
+
     // Perform Bitonic Sort using Alpaka
-    if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize,totalKernelTime) == EXIT_SUCCESS)
+    if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime) == EXIT_SUCCESS)
     {
         //std::cout << "Sorted array:\n";
         //printArray(data, size); // Print the sorted array
     }
 
-        
-    int result = bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime); // 传递计时参数
 
-    
+      int result = bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime); // 传递计时参数
 
 
-            // 按指定格式输出结果
+    // 按指定格式输出结果
     std::cout << alpaka::onHost::getName(device) << ", " << paddedSize << ", " << totalKernelTime << ", "
-              << (result == EXIT_SUCCESS ? "success" : "failure") << std::endl;
-
-
-
+              << (result == EXIT_SUCCESS ? "success" : "failure") << std::flush;
 
     return EXIT_SUCCESS; // Indicate successful execution
-
-
-
 }
 
 //-------------------------------------
@@ -323,6 +310,7 @@ int example(auto const cfg)
 int main()
 {
     std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl;
+
     // Test the example function with all enabled APIs and executors
     return alpaka::executeForEach(
         [=](auto const& tag) { return example(tag); },
