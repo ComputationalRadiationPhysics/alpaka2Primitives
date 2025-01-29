@@ -9,7 +9,8 @@
 #include <iostream>
 #include <limits>
 #include <vector>
-
+#include <chrono>
+#include <chrono>
 using namespace alpaka;
 
 //-------------------------------------
@@ -96,23 +97,6 @@ struct CompareSwapKernel
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 };
 
 //-------------------------------------
@@ -123,8 +107,10 @@ int bitonicSortWithAlpaka(
     alpaka::onHost::concepts::Device auto device, // Accelerator device object
     auto computeExec, // Alpaka execution object
     std::vector<UInt>& arr, // Array to sort
-    UInt n) // Size of the array
+    UInt n,
+    double& totalKernelTime) // Size of the array
 {
+    
     //-----------------------------------------
     // Create a queue for task execution
     //-----------------------------------------
@@ -203,7 +189,7 @@ int bitonicSortWithAlpaka(
                  * - After each iteration, the distance is halved until `dist = 1`, meaning adjacent elements are
                  * compared.
                  */
-
+                auto startTime = std::chrono::high_resolution_clock::now();
                 queue.enqueue(
                     computeExec, // The execution policy for the computation (e.g., GPU execution).
                     frameSpec, // The frame specification that defines thread and block layout.
@@ -222,6 +208,8 @@ int bitonicSortWithAlpaka(
                  */
 
                 alpaka::onHost::wait(queue); // Synchronize the host with the GPU.
+                auto endTime = std::chrono::high_resolution_clock::now();
+                totalKernelTime += std::chrono::duration<double>(endTime - startTime).count();
             }
         }
     }
@@ -283,11 +271,11 @@ int example(auto const cfg)
     // Create a host platform and device
     alpaka::onHost::Platform host_platform = alpaka::onHost::makePlatform(alpaka::api::cpu);
     alpaka::onHost::Device host = host_platform.makeDevice(0);
-    std::cout << "Host:   " << alpaka::onHost::getName(host) << "\n\n";
+    //std::cout << "Host:   " << alpaka::onHost::getName(host) << "\n\n";
 
     // Select the first device from the accelerator platform
     alpaka::onHost::Device device = platform.makeDevice(0);
-    std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
+    //std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
     // Prepare the data for sorting
     UInt size = 1024; // Original size of the array
@@ -299,17 +287,34 @@ int example(auto const cfg)
         data[i] = static_cast<UInt>(std::rand() % 1000); // Generate random numbers
     }
 
-    std::cout << "Unsorted array:\n";
-    printArray(data, size); // Print the unsorted array
+    //std::cout << "Unsorted array:\n";
+    //printArray(data, size); // Print the unsorted array
 
+    double totalKernelTime = 0.0; // 声明计时变量
     // Perform Bitonic Sort using Alpaka
-    if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize) == EXIT_SUCCESS)
+    if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize,totalKernelTime) == EXIT_SUCCESS)
     {
-        std::cout << "Sorted array:\n";
-        printArray(data, size); // Print the sorted array
+        //std::cout << "Sorted array:\n";
+        //printArray(data, size); // Print the sorted array
     }
 
+        
+    int result = bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize, totalKernelTime); // 传递计时参数
+
+    
+
+
+            // 按指定格式输出结果
+    std::cout << alpaka::onHost::getName(device) << ", " << paddedSize << ", " << totalKernelTime << ", "
+              << (result == EXIT_SUCCESS ? "success" : "failure") << std::endl;
+
+
+
+
     return EXIT_SUCCESS; // Indicate successful execution
+
+
+
 }
 
 //-------------------------------------
@@ -317,6 +322,7 @@ int example(auto const cfg)
 //-------------------------------------
 int main()
 {
+    std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl;
     // Test the example function with all enabled APIs and executors
     return alpaka::executeForEach(
         [=](auto const& tag) { return example(tag); },
