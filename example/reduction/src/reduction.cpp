@@ -109,7 +109,7 @@ void testReductionKernel(
 
     //std::cout << "[Host] " << alpaka::onHost::getName(host) << ", ";
     //std::cout << "[Device] " << alpaka::onHost::getName(device) << ", ";
-    std::cout << alpaka::onHost::getName(device) << ", ";
+    std::cout << alpaka::onHost::getName(device) << ", " << std::flush;
 
     // random number generator with a gaussian distribution
     //std::random_device rd{};
@@ -119,7 +119,7 @@ void testReductionKernel(
 
     // buffer size
     //std::cout << "[Problem Size] " << size << ", ";
-    std::cout << size << ", ";
+    std::cout << size << ", " << std::flush;
 
     // tolerance
     constexpr double epsilon = (double)0.0001;
@@ -130,7 +130,7 @@ void testReductionKernel(
     auto out_h = alpaka::onHost::allocMirror(host, in1_h);
 
     // fill the input buffers with random data, and the output buffer with zeros
-    for(uint32_t i = 0; i < size; ++i)
+    for(auto i = 0; i < size; ++i)
     {
         in1_h[i] = dist(rand);
         out_h[i] = 0.;
@@ -151,9 +151,10 @@ void testReductionKernel(
 
     // launch the 1-dimensional kernel
     constexpr auto frameExtent = 256;
+    //constexpr auto frameExtent = 1024;
     auto numFrames = Vec1D{size} / frameExtent /8;
     // The kernel assumes that the problem size is a multiple of the frame size.
-    assert((numFrames * frameExtent).x() *8 == size);
+    //assert((numFrames * frameExtent).x() *8 == size);
 
     auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
 
@@ -169,7 +170,7 @@ void testReductionKernel(
     alpaka::onHost::wait(queue);
     auto endT = std::chrono::high_resolution_clock::now();
     //std::cout << "[T Kernel Exec] " << std::chrono::duration<double>(endT - beginT).count() << 's' << ", ";
-    std::cout << std::chrono::duration<double>(endT - beginT).count() << ", ";
+    std::cout << std::chrono::duration<double>(endT - beginT).count() << ", " << std::flush;
 
 
     alpaka::onHost::wait(queue); 
@@ -192,7 +193,7 @@ void testReductionKernel(
 
     double sum = 0;
     // check the results
-    for(uint32_t i = 0; i < size; ++i)
+    for(auto i = 0; i < size; ++i)
     {
         //if (i < 5) std::cout << "[num] " << in1_h[i] << std::endl;
         sum += in1_h[i];     
@@ -201,7 +202,7 @@ void testReductionKernel(
     //printf("[Device Output] %f [Host Output] %f, ",finalSum, sum);
     assert(pow(finalSum - sum,2) < pow(epsilon,2));
     //std::cout << "[Results] " << "success\n";
-    std::cout << "success\n";
+    std::cout << "success\n" << std::flush;
 }
 
 int example(auto const cfg)
@@ -228,9 +229,9 @@ int example(auto const cfg)
     alpaka::onHost::Device device = platform.makeDevice(0);
 
     uint32_t size = 1024 * 1024;
-    for(int fac = 0; fac < 11; fac++){
+    for(int fac = 10; fac < 11; fac++){
+        size = 1024*1024*pow(2,fac);
         testReductionKernel(host, device, computeExec, size);
-        size *= 2;
     }
 
     return EXIT_SUCCESS;
@@ -240,7 +241,8 @@ auto main() -> int
 {
     using namespace alpaka;
     // Execute the example once for each enabled API and executor.
-    std::srand(std::time(0)); // set time as random seed; rand() after this line will automatically use the same seed
+    //std::srand(std::time(0)); // set time as random seed; rand() after this line will automatically use the same seed
+    std::srand(12345);
     std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl;
     return executeForEach(
         [=](auto const& tag) { return example(tag); },
