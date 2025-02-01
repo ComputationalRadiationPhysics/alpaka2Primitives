@@ -1,16 +1,58 @@
 ﻿{
   "configurations": [
     {
-      "name": "x64-Debug",
+      "name": "x64-R",
       "generator": "Ninja",
-      "configurationType": "Debug",
+      "configurationType": "Release",
       "inheritEnvironments": [],
-      "buildRoot": "${projectDir}\\out\\build\\${name}",
+      "buildRoot": "${projectDir}\\build\\${name}",
       "installRoot": "${projectDir}\\out\\install\\${name}",
       "cmakeCommandArgs": "-Dalpaka_API_OMP=ON -Dalpaka_TESTING=ON -Dalpaka_BENCHMARKS=ON -Dalpaka_EXAMPLES=ON -DCMAKE_CXX_STANDARD=20",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
-      "intelliSenseMode": "windows-clang-x64"
+      "intelliSenseMode": "windows-clang-x64",
+      "variables": [
+        {
+          "name": "alpaka_SYSTEM_CATCH2",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "alpaka_EXEC_CpuSerial",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "CMAKE_BUILD_TYPE",
+          "value": "Release",
+          "type": "STRING"
+        },
+        {
+          "name": "alpaka_EXEC_CpuCuda",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "alpaka_BENCHMARKS",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_TESTING",
+          "value": "False",
+          "type": "BOOL"
+        },
+        {
+          "name": "alpaka_EXEC_CpuOmpBlocks",
+          "value": "True",
+          "type": "BOOL"
+        },
+        {
+          "name": "alpaka_EXEC_CpuOmpBlocksAndThreads",
+          "value": "False",
+          "type": "BOOL"
+        }
+      ]
     }
   ]
 }

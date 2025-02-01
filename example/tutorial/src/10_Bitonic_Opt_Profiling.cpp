@@ -139,8 +139,9 @@ int bitonicSortWithAlpaka(
     //UInt blocks = (n + threadsPerBlock - 1u) / threadsPerBlock; // Number of blocks
     //auto threadSpec = alpaka::onHost::ThreadSpec{Vec1D{blocks}, Vec1D{threadsPerBlock}};
 
-    constexpr auto frameExtent = 256u;
+    constexpr auto frameExtent = 512u;
     auto numFrames = Vec1D{alpaka::core::divCeil(n, frameExtent * 4)};
+    //auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, 1u>{frameExtent}};
     auto frameSpec = alpaka::onHost::FrameSpec{numFrames, alpaka::CVec<uint32_t, frameExtent>{}};
 
     for(UInt length = 2u; length <= n; length <<= 1u) // Outer loop: Gradually increase the segment size to sort.
@@ -234,11 +235,7 @@ int example(auto const cfg, auto in_size)
     //std::cout << "Device: " << alpaka::onHost::getName(device) << "\n\n";
 
     // Prepare the data for sorting
-<<<<<<< HEAD:example/tutorial/src/09_Bitonic_Sort_frame_profiling.cpp
     UInt size = in_size; // Original size of the array
-=======
-    UInt size = 1024*8; // Original size of the array
->>>>>>> 932b159 (New Profiling From 1.30):example/tutorial/src/09_Bitonic_Optimized_profiling.cpp
     UInt paddedSize = nextPowerOfTwo(size); // Adjust to the next power of two
     std::vector<UInt> data(paddedSize, INF); // Initialize with INF for padding
     std::srand(1234); // Seed for reproducibility
@@ -250,7 +247,7 @@ int example(auto const cfg, auto in_size)
     //std::cout << "Unsorted array:\n";
     //printArray(data, size); // Print the unsorted array
 
-    double totalKernelTime = 0.0; // ������ʱ����
+    double totalKernelTime = 0.0; //
     // Perform Bitonic Sort using Alpaka
     if(bitonicSortWithAlpaka(host, device, computeExec, data, paddedSize,totalKernelTime) == EXIT_SUCCESS)
     {
@@ -264,7 +261,6 @@ int example(auto const cfg, auto in_size)
     
 
 
-            // ��ָ����ʽ������
     std::cout << alpaka::onHost::getName(device) << ", " << paddedSize << ", " << totalKernelTime << ", "
               << (result == EXIT_SUCCESS ? "success" : "failure") << std::endl << std::flush;
 
@@ -284,9 +280,9 @@ int main()
 {
     std::cout << "Device, Problem Size, T Kernel Exec (s), Results" << std::endl  << std::flush;
     // Test the example function with all enabled APIs and executors
-    UInt size = 1024*1024;
+    UInt size = 0;
     for(auto i = 0; i < 11; i++){
-        size *= pow(2,i);
+        size = 1024* pow(2, i);
         alpaka::executeForEach(
         [=](auto const& tag) { return example(tag, size); },
         alpaka::onHost::allExecutorsAndApis(alpaka::onHost::enabledApis));
